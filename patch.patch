@@ -1,0 +1,717 @@
+From c723bb45892b96f1bbe17c2f746b07024b615840 Mon Sep 17 00:00:00 2001
+From: wytsy1 <wytsy1@users.noreply.github.com>
+Date: Mon, 18 May 2026 17:30:36 +0800
+Subject: [PATCH] docs: add OpenAPI spec and Python SDK
+
+---
+ README.md                         |  79 ++++++++-
+ agentwork_sdk/__init__.py         |  12 ++
+ agentwork_sdk/client.py           | 145 +++++++++++++++
+ agentwork_sdk/models.py           |  44 +++++
+ examples/python_sdk_quickstart.py |  22 +++
+ examples/raw_httpx_quickstart.py  |  20 +++
+ openapi.yaml                      | 282 ++++++++++++++++++++++++++++++
+ pyproject.toml                    |  20 +++
+ 8 files changed, 620 insertions(+), 4 deletions(-)
+ create mode 100644 agentwork_sdk/__init__.py
+ create mode 100644 agentwork_sdk/client.py
+ create mode 100644 agentwork_sdk/models.py
+ create mode 100644 examples/python_sdk_quickstart.py
+ create mode 100644 examples/raw_httpx_quickstart.py
+ create mode 100644 openapi.yaml
+ create mode 100644 pyproject.toml
+
+diff --git a/README.md b/README.md
+index bc0712c..e9b988b 100644
+--- a/README.md
++++ b/README.md
+@@ -16,27 +16,98 @@ docker compose up -d
+ # API live at http://localhost:8000
+ ```
+ 
++## API Documentation
++
++The OpenAPI specification is available in [`openapi.yaml`](./openapi.yaml). When the API is running locally, FastAPI also serves interactive docs at:
++
++- Swagger UI: <http://localhost:8000/docs>
++- ReDoc: <http://localhost:8000/redoc>
++
++### Authentication
++
++Create an inbox first, then use the returned `api_key` as a bearer token for authenticated endpoints:
++
++```http
++Authorization: Bearer <api_key>
++```
++
+ ## API Usage
+ 
+ ### Create Inbox
++
+ ```bash
+ curl -X POST http://localhost:8000/v1/inboxes
+-# Returns: {email_address, api_key}
++# Returns: {"id", "email_address", "api_key", "created_at"}
++```
++
++### Get Current Inbox
++
++```bash
++curl http://localhost:8000/v1/inboxes/me \
++  -H "Authorization: Bearer <api_key>"
+ ```
+ 
+ ### Send Email
++
++Requires AWS SES settings to be configured on the API server.
++
+ ```bash
+ curl -X POST http://localhost:8000/v1/inboxes/me/send \
+-  -H "Authorization: Bearer YOUR_API_KEY" \
++  -H "Authorization: Bearer <api_key>" \
++  -H "Content-Type: application/json" \
+   -d '{"to": "x@example.com", "subject": "Hi", "body": "Hello"}'
+ ```
+ 
+ ### List Messages
++
+ ```bash
+-curl http://localhost:8000/v1/inboxes/me/messages \
+-  -H "Authorization: Bearer YOUR_API_KEY"
++curl "http://localhost:8000/v1/inboxes/me/messages?limit=50&unread_only=false" \
++  -H "Authorization: Bearer <api_key>"
+ ```
+ 
++### Receive Mailgun Webhook Locally
++
++```bash
++curl -X POST http://localhost:8000/v1/webhooks/mailgun \
++  -H "Content-Type: application/x-www-form-urlencoded" \
++  --data-urlencode "sender=user@example.com" \
++  --data-urlencode "recipient=<inbox_email_address>" \
++  --data-urlencode "subject=Hello" \
++  --data-urlencode "body_plain=Inbound message body" \
++  --data-urlencode "message_id=test-message-id"
++```
++
++## Python SDK
++
++This repository includes a lightweight Python SDK in [`agentwork_sdk`](./agentwork_sdk), built with `httpx` and `pydantic`.
++
++### Install for local development
++
++```bash
++pip install -e .
++```
++
++### SDK Quickstart
++
++```python
++from agentwork_sdk import AgentWorkClient
++
++with AgentWorkClient(base_url="http://localhost:8000") as client:
++    inbox = client.create_inbox()
++    print(inbox.email_address)
++
++    current = client.get_inbox()
++    print(current.id)
++
++    messages = client.list_messages(limit=10)
++    print(messages.total)
++```
++
++More examples:
++
++- [`examples/python_sdk_quickstart.py`](./examples/python_sdk_quickstart.py)
++- [`examples/raw_httpx_quickstart.py`](./examples/raw_httpx_quickstart.py)
++
+ ## Architecture
+ 
+ ```
+diff --git a/agentwork_sdk/__init__.py b/agentwork_sdk/__init__.py
+new file mode 100644
+index 0000000..77cb078
+--- /dev/null
++++ b/agentwork_sdk/__init__.py
+@@ -0,0 +1,12 @@
++from .client import AgentWorkClient, AgentWorkError
++from .models import InboxPublic, InboxResponse, Message, MessageList, SendEmailResult
++
++__all__ = [
++    "AgentWorkClient",
++    "AgentWorkError",
++    "InboxPublic",
++    "InboxResponse",
++    "Message",
++    "MessageList",
++    "SendEmailResult",
++]
+diff --git a/agentwork_sdk/client.py b/agentwork_sdk/client.py
+new file mode 100644
+index 0000000..c4e4bfc
+--- /dev/null
++++ b/agentwork_sdk/client.py
+@@ -0,0 +1,145 @@
++from __future__ import annotations
++
++from typing import Any, Dict, Optional
++
++import httpx
++
++from .models import InboxPublic, InboxResponse, MessageList, SendEmailResult
++
++
++class AgentWorkError(Exception):
++    """Raised when the AgentWork API returns an error response."""
++
++    def __init__(self, status_code: int, message: str):
++        self.status_code = status_code
++        self.message = message
++        super().__init__(f"AgentWork API error {status_code}: {message}")
++
++
++class AgentWorkClient:
++    """Small Python SDK for AgentWork Infrastructure.
++
++    The client supports both unauthenticated inbox creation and authenticated
++    inbox operations using the returned API key.
++    """
++
++    def __init__(
++        self,
++        base_url: str = "http://localhost:8000",
++        api_key: Optional[str] = None,
++        timeout: float = 10.0,
++        max_retries: int = 2,
++    ) -> None:
++        self.base_url = base_url.rstrip("/")
++        self.api_key = api_key
++        self.timeout = timeout
++        self.max_retries = max_retries
++        self._client = httpx.Client(base_url=self.base_url, timeout=timeout)
++
++    def close(self) -> None:
++        self._client.close()
++
++    def __enter__(self) -> "AgentWorkClient":
++        return self
++
++    def __exit__(self, *args: object) -> None:
++        self.close()
++
++    def _headers(self) -> Dict[str, str]:
++        headers = {"Accept": "application/json"}
++        if self.api_key:
++            headers["Authorization"] = f"Bearer {self.api_key}"
++        return headers
++
++    def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
++        last_exc: Optional[httpx.HTTPError] = None
++        for attempt in range(self.max_retries + 1):
++            try:
++                response = self._client.request(method, path, headers=self._headers(), **kwargs)
++                if response.status_code >= 500 and attempt < self.max_retries:
++                    continue
++                if response.status_code >= 400:
++                    detail = self._extract_error(response)
++                    raise AgentWorkError(response.status_code, detail)
++                return response
++            except (httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError) as exc:
++                last_exc = exc
++                if attempt >= self.max_retries:
++                    raise
++        raise RuntimeError(f"Request failed: {last_exc}")
++
++    @staticmethod
++    def _extract_error(response: httpx.Response) -> str:
++        try:
++            payload = response.json()
++        except ValueError:
++            return response.text
++        detail = payload.get("detail") if isinstance(payload, dict) else None
++        return str(detail or payload)
++
++    def create_inbox(self) -> InboxResponse:
++        """Create a new inbox and store its API key on this client."""
++        response = self._request("POST", "/v1/inboxes")
++        inbox = InboxResponse.model_validate(response.json())
++        self.api_key = inbox.api_key
++        return inbox
++
++    def get_inbox(self) -> InboxPublic:
++        response = self._request("GET", "/v1/inboxes/me")
++        return InboxPublic.model_validate(response.json())
++
++    def send_email(
++        self,
++        to: str,
++        subject: str,
++        body: str,
++        html_body: Optional[str] = None,
++    ) -> SendEmailResult:
++        payload = {
++            "to": to,
++            "subject": subject,
++            "body": body,
++            "html_body": html_body,
++        }
++        response = self._request("POST", "/v1/inboxes/me/send", json=payload)
++        return SendEmailResult.model_validate(response.json())
++
++    def list_messages(
++        self,
++        skip: int = 0,
++        limit: int = 50,
++        unread_only: bool = False,
++    ) -> MessageList:
++        response = self._request(
++            "GET",
++            "/v1/inboxes/me/messages",
++            params={"skip": skip, "limit": limit, "unread_only": unread_only},
++        )
++        return MessageList.model_validate(response.json())
++
++    def receive_webhook(
++        self,
++        sender: str,
++        recipient: str,
++        subject: str = "",
++        body_plain: str = "",
++        body_html: str = "",
++        message_id: str = "",
++    ) -> Dict[str, Any]:
++        """Post a Mailgun-style webhook payload.
++
++        This is useful for local testing of inbound email handling.
++        """
++        response = self._request(
++            "POST",
++            "/v1/webhooks/mailgun",
++            data={
++                "sender": sender,
++                "recipient": recipient,
++                "subject": subject,
++                "body_plain": body_plain,
++                "body_html": body_html,
++                "message_id": message_id,
++            },
++        )
++        return response.json()
+diff --git a/agentwork_sdk/models.py b/agentwork_sdk/models.py
+new file mode 100644
+index 0000000..f7bf020
+--- /dev/null
++++ b/agentwork_sdk/models.py
+@@ -0,0 +1,44 @@
++from datetime import datetime
++from typing import List, Optional
++from uuid import UUID
++
++from pydantic import BaseModel, EmailStr
++
++
++class InboxResponse(BaseModel):
++    id: UUID
++    email_address: EmailStr
++    api_key: str
++    created_at: datetime
++
++
++class InboxPublic(BaseModel):
++    id: UUID
++    email_address: EmailStr
++    created_at: datetime
++
++
++class SendEmailResult(BaseModel):
++    status: str
++    message_id: str
++    to: EmailStr
++
++
++class Message(BaseModel):
++    id: UUID
++    sender: str
++    recipient: str
++    subject: Optional[str] = None
++    body_text: Optional[str] = None
++    received_at: datetime
++    is_read: bool
++
++
++class MessageList(BaseModel):
++    total: int
++    messages: List[Message]
++
++
++class WebhookResult(BaseModel):
++    status: str
++    message_id: Optional[str] = None
+diff --git a/examples/python_sdk_quickstart.py b/examples/python_sdk_quickstart.py
+new file mode 100644
+index 0000000..8d75333
+--- /dev/null
++++ b/examples/python_sdk_quickstart.py
+@@ -0,0 +1,22 @@
++from agentwork_sdk import AgentWorkClient
++
++
++# Start the API locally first:
++# uvicorn app.main:app --reload
++with AgentWorkClient(base_url="http://localhost:8000") as client:
++    inbox = client.create_inbox()
++    print(f"Created inbox: {inbox.email_address}")
++
++    current = client.get_inbox()
++    print(f"Current inbox id: {current.id}")
++
++    messages = client.list_messages(limit=10)
++    print(f"Messages: {messages.total}")
++
++    # Requires AWS SES settings to be configured on the API server.
++    # sent = client.send_email(
++    #     to="user@example.com",
++    #     subject="Hello from AgentWork",
++    #     body="This message was sent via the AgentWork Python SDK.",
++    # )
++    # print(sent.message_id)
+diff --git a/examples/raw_httpx_quickstart.py b/examples/raw_httpx_quickstart.py
+new file mode 100644
+index 0000000..1135b49
+--- /dev/null
++++ b/examples/raw_httpx_quickstart.py
+@@ -0,0 +1,20 @@
++import httpx
++
++BASE_URL = "http://localhost:8000"
++
++
++inbox = httpx.post(f"{BASE_URL}/v1/inboxes").json()
++api_key = inbox["api_key"]
++print("created", inbox["email_address"])
++
++headers = {"Authorization": f"Bearer {api_key}"}
++
++profile = httpx.get(f"{BASE_URL}/v1/inboxes/me", headers=headers).json()
++print("profile", profile)
++
++messages = httpx.get(
++    f"{BASE_URL}/v1/inboxes/me/messages",
++    headers=headers,
++    params={"limit": 10, "unread_only": False},
++).json()
++print("messages", messages)
+diff --git a/openapi.yaml b/openapi.yaml
+new file mode 100644
+index 0000000..5559e04
+--- /dev/null
++++ b/openapi.yaml
+@@ -0,0 +1,282 @@
++openapi: 3.1.0
++info:
++  title: AgentWork Infrastructure API
++  version: 0.1.0
++  description: |
++    Email infrastructure APIs for AI agents. Agents can create inboxes,
++    send email, list received messages, and receive inbound Mailgun webhooks.
++servers:
++  - url: http://localhost:8000
++    description: Local development
++security: []
++tags:
++  - name: Health
++  - name: Inboxes
++  - name: Messages
++  - name: Webhooks
++paths:
++  /health:
++    get:
++      tags: [Health]
++      summary: Health check
++      operationId: healthCheck
++      responses:
++        '200':
++          description: Service status
++          content:
++            application/json:
++              schema:
++                type: object
++                properties:
++                  status:
++                    type: string
++                    example: ok
++                  service:
++                    type: string
++                    example: agent-suite
++  /v1/inboxes:
++    post:
++      tags: [Inboxes]
++      summary: Create inbox
++      operationId: createInbox
++      description: Create a new agent inbox and return its generated email address and API key.
++      responses:
++        '201':
++          description: Created inbox
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/InboxResponse'
++  /v1/inboxes/me:
++    get:
++      tags: [Inboxes]
++      summary: Get current inbox
++      operationId: getCurrentInbox
++      security:
++        - bearerAuth: []
++      responses:
++        '200':
++          description: Current inbox details
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/InboxPublic'
++        '401':
++          $ref: '#/components/responses/Unauthorized'
++  /v1/inboxes/me/send:
++    post:
++      tags: [Messages]
++      summary: Send email
++      operationId: sendEmail
++      security:
++        - bearerAuth: []
++      requestBody:
++        required: true
++        content:
++          application/json:
++            schema:
++              $ref: '#/components/schemas/MessageCreate'
++      responses:
++        '200':
++          description: Email sent
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/SendEmailResponse'
++        '401':
++          $ref: '#/components/responses/Unauthorized'
++        '503':
++          description: AWS SES is not configured
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/ErrorResponse'
++  /v1/inboxes/me/messages:
++    get:
++      tags: [Messages]
++      summary: List messages
++      operationId: listMessages
++      security:
++        - bearerAuth: []
++      parameters:
++        - name: skip
++          in: query
++          schema:
++            type: integer
++            minimum: 0
++            default: 0
++        - name: limit
++          in: query
++          schema:
++            type: integer
++            minimum: 1
++            default: 50
++        - name: unread_only
++          in: query
++          schema:
++            type: boolean
++            default: false
++      responses:
++        '200':
++          description: Messages for current inbox
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/MessageList'
++        '401':
++          $ref: '#/components/responses/Unauthorized'
++  /v1/webhooks/mailgun:
++    post:
++      tags: [Webhooks]
++      summary: Receive Mailgun inbound email webhook
++      operationId: receiveMailgunWebhook
++      requestBody:
++        required: true
++        content:
++          application/x-www-form-urlencoded:
++            schema:
++              $ref: '#/components/schemas/MailgunWebhookPayload'
++      responses:
++        '200':
++          description: Webhook processing result
++          content:
++            application/json:
++              schema:
++                $ref: '#/components/schemas/WebhookResponse'
++components:
++  securitySchemes:
++    bearerAuth:
++      type: http
++      scheme: bearer
++      bearerFormat: API key
++  responses:
++    Unauthorized:
++      description: Invalid or missing API key
++      content:
++        application/json:
++          schema:
++            $ref: '#/components/schemas/ErrorResponse'
++  schemas:
++    InboxResponse:
++      type: object
++      required: [id, email_address, api_key, created_at]
++      properties:
++        id:
++          type: string
++          format: uuid
++        email_address:
++          type: string
++          format: email
++        api_key:
++          type: string
++          description: Bearer token used for authenticated inbox operations.
++        created_at:
++          type: string
++          format: date-time
++    InboxPublic:
++      type: object
++      required: [id, email_address, created_at]
++      properties:
++        id:
++          type: string
++          format: uuid
++        email_address:
++          type: string
++          format: email
++        created_at:
++          type: string
++          format: date-time
++    MessageCreate:
++      type: object
++      required: [to, subject, body]
++      properties:
++        to:
++          type: string
++          format: email
++        subject:
++          type: string
++        body:
++          type: string
++        html_body:
++          type: string
++          nullable: true
++    SendEmailResponse:
++      type: object
++      required: [status, message_id, to]
++      properties:
++        status:
++          type: string
++          example: sent
++        message_id:
++          type: string
++        to:
++          type: string
++          format: email
++    MessageResponse:
++      type: object
++      required: [id, sender, recipient, received_at, is_read]
++      properties:
++        id:
++          type: string
++          format: uuid
++        sender:
++          type: string
++        recipient:
++          type: string
++        subject:
++          type: string
++          nullable: true
++        body_text:
++          type: string
++          nullable: true
++        received_at:
++          type: string
++          format: date-time
++        is_read:
++          type: boolean
++    MessageList:
++      type: object
++      required: [total, messages]
++      properties:
++        total:
++          type: integer
++          minimum: 0
++        messages:
++          type: array
++          items:
++            $ref: '#/components/schemas/MessageResponse'
++    MailgunWebhookPayload:
++      type: object
++      required: [sender, recipient]
++      properties:
++        sender:
++          type: string
++        recipient:
++          type: string
++        subject:
++          type: string
++          default: ''
++        body_plain:
++          type: string
++          default: ''
++        body_html:
++          type: string
++          default: ''
++        message_id:
++          type: string
++          default: ''
++    WebhookResponse:
++      type: object
++      required: [status]
++      properties:
++        status:
++          type: string
++          enum: [received, dropped]
++        message_id:
++          type: string
++    ErrorResponse:
++      type: object
++      required: [detail]
++      properties:
++        detail:
++          type: string
+diff --git a/pyproject.toml b/pyproject.toml
+new file mode 100644
+index 0000000..5bcbeb0
+--- /dev/null
++++ b/pyproject.toml
+@@ -0,0 +1,20 @@
++[build-system]
++requires = ["setuptools>=68", "wheel"]
++build-backend = "setuptools.build_meta"
++
++[project]
++name = "agent-suite-sdk"
++version = "0.1.0"
++description = "Python SDK for AgentWork Infrastructure APIs"
++readme = "README.md"
++requires-python = ">=3.9"
++dependencies = [
++    "httpx>=0.26.0",
++    "pydantic>=2.5.0",
++    "email-validator>=2.0.0",
++]
++authors = [{ name = "AgentWork contributors" }]
++license = { text = "MIT" }
++
++[tool.setuptools.packages.find]
++include = ["agentwork_sdk*"]
