@@ -1,0 +1,139 @@
+openapi: 3.0.2
+info:
+  title: Agent Suite
+  description: API for Agent Suite
+  version: 0.1.0
+paths:
+  /health:
+    get:
+      summary: Health check
+      responses:
+        200:
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  service:
+                    type: string
+  /v1/inboxes:
+    post:
+      summary: Create a new inbox
+      responses:
+        201:
+          description: Inbox created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InboxResponse'
+  /v1/inboxes/me:
+    get:
+      summary: Get current inbox details
+      responses:
+        200:
+          description: Inbox details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InboxPublic'
+  /v1/inboxes/me/send:
+    post:
+      summary: Send an email
+      responses:
+        200:
+          description: Email sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message_id:
+                    type: string
+                  to:
+                    type: string
+  /v1/inboxes/me/messages:
+    get:
+      summary: List received messages for this inbox
+      responses:
+        200:
+          description: Messages listed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageList'
+  /v1/webhooks/mailgun:
+    post:
+      summary: Receive incoming email from Mailgun
+      responses:
+        200:
+          description: Email received
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message_id:
+                    type: string
+components:
+  schemas:
+    InboxResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email_address:
+          type: string
+        api_key:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    InboxPublic:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email_address:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    MessageList:
+      type: object
+      properties:
+        total:
+          type: integer
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/MessageResponse'
+    MessageResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        sender:
+          type: string
+        recipient:
+          type: string
+        subject:
+          type: string
+          nullable: true
+        body_text:
+          type: string
+          nullable: true
+        received_at:
+          type: string
+          format: date-time
+        is_read:
+          type: boolean
