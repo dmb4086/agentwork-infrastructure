@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AgentWork Inbox</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-white min-h-screen p-4">
+    <div class="max-w-2xl mx-auto">
+        <h1 class="text-2xl font-bold mb-4">AgentWork Inbox</h1>
+        
+        <!-- Auth -->
+        <div class="mb-6">
+            <input id="apiKey" type="password" placeholder="Enter API Key" class="w-full p-2 bg-gray-800 border border-gray-700 rounded mb-2">
+            <button onclick="saveKey()" class="bg-blue-600 px-4 py-2 rounded">Save Key</button>
+        </div>
+
+        <!-- Tabs -->
+        <div class="flex gap-4 mb-4">
+            <button onclick="showSection('inbox')" class="text-blue-400">Inbox</button>
+            <button onclick="showSection('compose')" class="text-blue-400">Compose</button>
+        </div>
+
+        <!-- Inbox Section -->
+        <div id="inbox" class="space-y-2"></div>
+
+        <!-- Compose Section -->
+        <div id="compose" class="hidden space-y-2">
+            <input id="to" placeholder="To" class="w-full p-2 bg-gray-800 rounded">
+            <input id="subject" placeholder="Subject" class="w-full p-2 bg-gray-800 rounded">
+            <textarea id="body" placeholder="Body" class="w-full p-2 bg-gray-800 rounded h-32"></textarea>
+            <button onclick="sendEmail()" class="bg-green-600 px-4 py-2 rounded">Send</button>
+        </div>
+    </div>
+
+    <script>
+        const getHeaders = () => ({ 'Authorization': `Bearer ${localStorage.getItem('apiKey')}`, 'Content-Type': 'application/json' });
+
+        function saveKey() { localStorage.setItem('apiKey', document.getElementById('apiKey').value); alert('Saved'); }
+        
+        async function fetchMessages() {
+            const res = await fetch('/v1/inboxes/me/messages', { headers: getHeaders() });
+            const data = await res.json();
+            document.getElementById('inbox').innerHTML = data.map(m => `<div class="p-3 bg-gray-800 rounded"><b>${m.subject}</b><br>${m.body}</div>`).join('');
+        }
+
+        async function sendEmail() {
+            const payload = { to: document.getElementById('to').value, subject: document.getElementById('subject').value, body: document.getElementById('body').value };
+            await fetch('/v1/inboxes/me/send', { method: 'POST', headers: getHeaders(), body: JSON.stringify(payload) });
+            alert('Sent!');
+        }
+
+        function showSection(id) {
+            document.getElementById('inbox').classList.toggle('hidden', id !== 'inbox');
+            document.getElementById('compose').classList.toggle('hidden', id !== 'compose');
+            if(id === 'inbox') fetchMessages();
+        }
+    </script>
+</body>
+</html>
